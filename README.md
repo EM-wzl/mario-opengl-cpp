@@ -4,6 +4,8 @@ C++17 / OpenGL 3.3 Core / GLFW / GLM 的横版卷轴平台游戏。角色、地�
 
 OpenGL 函数加载由 `src/glcore.{h,cpp}` 完成，不依赖 GLEW/GLAD。仓库内置 GLFW 与 GLM，克隆后默认即可离线构建。
 
+GitHub 仓库：https://github.com/EM-wzl/mario-opengl-cpp
+
 ## 构建
 
 ```bash
