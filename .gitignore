@@ -1,0 +1,20 @@
+# 构建产物
+build/
+build*/
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.idb
+
+# 本地工作数据与临时文件
+.workbuddy/
+*.log
+*.tmp
+*.swp
+.DS_Store
+
+# 用户本地存档与最高分（若误放在工程目录）
+.mario_save_*.dat
+.mario_highscore
