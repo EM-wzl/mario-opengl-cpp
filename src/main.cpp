@@ -9,12 +9,93 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace {
+#ifdef _WIN32
+// 控制台默认使用 GBK 代码页，直接输出 UTF-8 中文会产生乱码。
+void configureConsole() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+}
+
+// 双击 exe 时系统会为进程单独创建一个控制台窗口；把仅属于本进程的
+// 控制台隐藏，避免黑色命令行窗口盖住游戏窗口。从已有终端启动时保留。
+void hideOwnConsole() {
+    DWORD processes[2] = {};
+    if (GetConsoleProcessList(processes, 2) == 1) {
+        HWND console = GetConsoleWindow();
+        if (console != nullptr) ShowWindow(console, SW_HIDE);
+    }
+}
+#else
+void configureConsole() {}
+void hideOwnConsole() {}
+#endif
+
+// 把 glReadPixels 读到的 RGB 数据写成 24 位 BMP，便于无截屏环境下检查实际画面。
+bool writeBmp(const std::string& path, int width, int height,
+              const std::vector<unsigned char>& rgb) {
+    const int rowSize = ((width * 3 + 3) / 4) * 4;
+    const auto imageSize = static_cast<std::uint32_t>(rowSize * height);
+    std::ofstream file(path, std::ios::binary);
+    if (!file) return false;
+    const auto put16 = [&](std::uint16_t value) {
+        file.put(static_cast<char>(value & 0xFFU));
+        file.put(static_cast<char>((value >> 8) & 0xFFU));
+    };
+    const auto put32 = [&](std::uint32_t value) {
+        for (int i = 0; i < 4; ++i) file.put(static_cast<char>((value >> (8 * i)) & 0xFFU));
+    };
+    file.write("BM", 2);
+    put32(54U + imageSize);
+    put16(0);
+    put16(0);
+    put32(54U);
+    put32(40U);
+    put32(static_cast<std::uint32_t>(width));
+    put32(static_cast<std::uint32_t>(height));
+    put16(1);
+    put16(24);
+    put32(0);
+    put32(imageSize);
+    put32(2835U);
+    put32(2835U);
+    put32(0);
+    put32(0);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const std::size_t i = static_cast<std::size_t>(y * width + x) * 3U;
+            file.put(static_cast<char>(rgb[i + 2]));
+            file.put(static_cast<char>(rgb[i + 1]));
+            file.put(static_cast<char>(rgb[i + 0]));
+        }
+        for (int pad = width * 3; pad < rowSize; ++pad) file.put('\0');
+    }
+    return file.good();
+}
+}  // namespace
 
 int main(int argc, char** argv) {
+    configureConsole();
     const bool smokeTest = argc > 1 && std::string(argv[1]) == "--smoke";
+    const bool captureMode = argc > 2 && std::string(argv[1]) == "--capture";
 
     // 无窗口自检模式：验证所有关卡数据，构建流水线可直接调用。
     if (argc > 1 && std::string(argv[1]) == "--validate") {
@@ -57,7 +138,7 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    if (smokeTest) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    if (smokeTest || captureMode) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
@@ -77,7 +158,12 @@ int main(int argc, char** argv) {
         }
         // 清空可能存在的历史 GL 错误状态。
         while (glGetError() != GL_NO_ERROR) {}
-        glfwSwapInterval(smokeTest ? 0 : 1);
+        glfwSwapInterval(smokeTest || captureMode ? 0 : 1);
+        if (!smokeTest && !captureMode) {
+            // 普通启动：隐藏自动生成的控制台并把游戏窗口置于前台。
+            hideOwnConsole();
+            glfwFocusWindow(window);
+        }
 
         {
             Renderer renderer;
@@ -87,6 +173,33 @@ int main(int argc, char** argv) {
             std::cout << "操作：方向键或 A/D 移动，Space/W/上跳跃，J 武器攻击，Q 切换武器，F 商店/箱子，C/Z 角色技能，F5 保存，F9/L 读取，P 暂停，M 静音。\n";
             std::cout << "标题界面：上下选择行，左右调整模式/角色/关卡、难度、种子与存档位，Enter 开始，L 读取存档。\n";
             if (!audio.available()) std::cout << "未检测到可用音频后端，游戏将以静音模式运行。\n";
+
+            if (captureMode) {
+                const std::string prefix = argv[2];
+                auto captureFrame = [&](const std::string& path) {
+                    int width = 0;
+                    int height = 0;
+                    glfwGetFramebufferSize(window, &width, &height);
+                    if (width <= 0 || height <= 0) return false;
+                    renderer.beginFrame(width, height);
+                    game.render(renderer);
+                    renderer.endFrame();
+                    std::vector<unsigned char> pixels(
+                        static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3U);
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+                    const bool ok = writeBmp(path, width, height, pixels);
+                    glfwSwapBuffers(window);
+                    return ok;
+                };
+                // 标题界面中文最密集，另抓一帧实际关卡画面，确认图集与中文纹理都正常。
+                bool ok = captureFrame(prefix + "_title.bmp");
+                game.startAtLevel(0);
+                for (int frame = 0; frame < 30; ++frame) game.update(config::fixedStep);
+                ok = captureFrame(prefix + "_level.bmp") && ok;
+                std::cout << (ok ? "CAPTURE OK\n" : "CAPTURE FAILED\n");
+                return ok ? 0 : 1;
+            }
 
             if (smokeTest) {
                 // 逐关加载并模拟：覆盖关卡构建、怪物等级、平台移动、成长界面与完整绘制。
