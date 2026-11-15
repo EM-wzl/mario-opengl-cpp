@@ -34,6 +34,30 @@ T parseValue(const std::unordered_map<std::string, std::string>& values,
     if (!(stream >> result)) return fallback;
     return result;
 }
+
+constexpr int shopItemCount = 6;
+
+const char* shopItemName(int index) {
+    switch (index) {
+    case 0: return "购买木剑";
+    case 1: return "购买短弓";
+    case 2: return "购买火杖";
+    case 3: return "强化当前武器";
+    case 4: return "购买药水";
+    default: return "体力训练";
+    }
+}
+
+int shopItemCost(int index, int weaponLevel, int maxHp) {
+    switch (index) {
+    case 0: return weaponPrice(WeaponType::Sword);
+    case 1: return weaponPrice(WeaponType::Bow);
+    case 2: return weaponPrice(WeaponType::Wand);
+    case 3: return weaponUpgradeCost(weaponLevel);
+    case 4: return 20;
+    default: return 80 + std::max(0, maxHp - 100) / 10 * 20;
+    }
+}
 }  // namespace
 
 Game::Game(Input& input, Audio& audio) : input_(input), audio_(audio) {
@@ -64,7 +88,7 @@ bool Game::readSave(int slot, SaveData& data) const {
         values[line.substr(0, separator)] = line.substr(separator + 1);
     }
     data.version = parseValue(values, "version", 0);
-    if (data.version != 1) return false;
+    if (data.version != 1 && data.version != 2) return false;
     data.mode = parseValue(values, "mode", 0);
     data.character = parseValue(values, "character", 0);
     data.difficulty = parseValue(values, "difficulty", 1);
@@ -89,6 +113,19 @@ bool Game::readSave(int slot, SaveData& data) const {
     data.talents.skillCooldown = parseValue(values, "talentSkill", 1.0F);
     data.talents.stompBounce = parseValue(values, "talentBounce", 1.0F);
     data.talents.magnet = parseValue(values, "talentMagnet", 0.0F);
+    data.currentWeapon = parseValue(values, "currentWeapon", 0);
+    for (int i = 0; i < 4; ++i) {
+        const std::string prefix = "weapon" + std::to_string(i);
+        data.weapons.owned[i] = parseValue(values, prefix + "Owned", i == 0 ? 1 : 0) != 0;
+        data.weapons.level[i] = std::clamp(parseValue(values, prefix + "Level", 1), 1, 9);
+    }
+    data.weapons.owned[0] = true;
+    if (data.version == 1) {
+        // 旧存档使用 1-9 点体力，迁移到 100 血制。
+        data.maxHp = std::clamp(data.maxHp * 20, config::initialMaxHp, config::maxHpCap);
+        data.hp = std::clamp(data.hp * 20, 1, data.maxHp);
+        data.version = 2;
+    }
     return true;
 }
 
@@ -109,7 +146,7 @@ bool Game::saveGame(int slot) {
         return false;
     }
     file << std::setprecision(7);
-    file << "version=1\n"
+    file << "version=2\n"
          << "mode=" << (endlessMode_ ? 1 : 0) << '\n'
          << "character=" << static_cast<int>(player_.character()) << '\n'
          << "difficulty=" << endlessDifficulty_ << '\n'
@@ -125,6 +162,7 @@ bool Game::saveGame(int slot) {
          << "xp=" << xp_ << '\n'
          << "power=" << static_cast<int>(player_.power) << '\n'
          << "checkpoint=" << (checkpointActive_ ? 1 : 0) << '\n'
+         << "currentWeapon=" << static_cast<int>(currentWeapon_) << '\n'
          << "timeLeft=" << timeLeft_ << '\n'
          << "talentSpeed=" << player_.talents.speed << '\n'
          << "talentJump=" << player_.talents.jump << '\n'
@@ -134,6 +172,10 @@ bool Game::saveGame(int slot) {
          << "talentSkill=" << player_.talents.skillCooldown << '\n'
          << "talentBounce=" << player_.talents.stompBounce << '\n'
          << "talentMagnet=" << player_.talents.magnet << '\n';
+    for (int i = 0; i < 4; ++i) {
+        file << "weapon" << i << "Owned=" << (weapons_.owned[i] ? 1 : 0) << '\n'
+             << "weapon" << i << "Level=" << weapons_.level[i] << '\n';
+    }
     showSaveMessage("已保存存档位 " + std::to_string(safeSlot));
     return true;
 }
@@ -157,11 +199,15 @@ bool Game::loadGame(int slot) {
     levelIndex_ = std::clamp(data.levelIndex, 0, config::levelCount - 1);
     score_ = std::max(0, data.score);
     coins_ = std::max(0, data.coins);
-    maxHp_ = std::clamp(data.maxHp, 1, config::maxHpCap);
+    maxHp_ = std::clamp(data.maxHp, config::initialMaxHp, config::maxHpCap);
     hp_ = std::clamp(data.hp, 1, maxHp_);
     playerLevel_ = std::max(1, data.playerLevel);
     xp_ = std::max(0, data.xp);
     pendingLevelUps_ = 0;
+    weapons_ = data.weapons;
+    currentWeapon_ = static_cast<WeaponType>(std::clamp(data.currentWeapon, 0, 3));
+    if (!weapons_.owned[static_cast<int>(currentWeapon_)]) currentWeapon_ = WeaponType::Fists;
+    weaponCooldown_ = 0.0F;
     player_.resetProgression();
     player_.talents = data.talents;
     player_.setCharacter(options_.character);
@@ -182,6 +228,11 @@ void Game::showSaveMessage(const std::string& message) {
     saveMessageTimer_ = 1.6F;
 }
 
+void Game::showShopMessage(const std::string& message) {
+    shopMessage_ = message;
+    shopMessageTimer_ = 1.8F;
+}
+
 const Boss* Game::activeBoss() const {
     for (const auto& enemy : enemies_) {
         const auto* boss = dynamic_cast<const Boss*>(enemy.get());
@@ -194,9 +245,72 @@ bool Game::bossAlive() const {
     return activeBoss() != nullptr;
 }
 
-void Game::spawnBossShot(float x, float y, float vx, float vy, int kind) {
-    if (bossShots_.size() >= 16) return;
-    bossShots_.push_back(std::make_unique<BossShot>(x, y, vx, vy, kind));
+void Game::spawnBossShot(float x, float y, float vx, float vy, int kind, int damage) {
+    if (bossShots_.size() >= 24) return;
+    bossShots_.push_back(std::make_unique<BossShot>(x, y, vx, vy, kind, damage));
+}
+
+void Game::spawnPlayerShot(float x, float y, float vx, float vy, int damage, int kind) {
+    if (playerShots_.size() >= 8) return;
+    playerShots_.push_back(std::make_unique<PlayerShot>(x, y, vx, vy, damage, kind));
+}
+
+void Game::performAttack() {
+    if (state_ != GameState::Playing || player_.dead || weaponCooldown_ > 0.0F) return;
+    const int index = static_cast<int>(currentWeapon_);
+    const int level = weapons_.level[index];
+    const int damage = weaponBaseDamage(currentWeapon_) + (level - 1) * 6;
+    const float centerX = player_.body.position.x + player_.body.size.x * 0.5F;
+    const float centerY = player_.body.position.y + player_.body.size.y * 0.5F;
+    if (weaponRanged(currentWeapon_)) {
+        const int kind = currentWeapon_ == WeaponType::Bow ? 0 : 1;
+        spawnPlayerShot(centerX + player_.facing * 20.0F, centerY,
+                        player_.facing * config::playerShotSpeed, 0.0F, damage, kind);
+        audio_.play(SoundEffect::Fire);
+    } else {
+        performMeleeAttack(currentWeapon_, damage);
+        audio_.play(SoundEffect::Kick);
+    }
+    weaponCooldown_ = ::weaponCooldown(currentWeapon_);
+}
+
+void Game::cycleWeapon() {
+    const int count = static_cast<int>(WeaponType::Count);
+    const int current = static_cast<int>(currentWeapon_);
+    for (int step = 1; step <= count; ++step) {
+        const int candidate = (current + step) % count;
+        if (weapons_.owned[candidate]) {
+            currentWeapon_ = static_cast<WeaponType>(candidate);
+            showShopMessage(std::string("切换武器 ") + weaponName(currentWeapon_));
+            return;
+        }
+    }
+}
+
+void Game::performMeleeAttack(WeaponType weapon, int damage) {
+    const float reach = weapon == WeaponType::Sword
+        ? config::weaponMeleeReachSword : config::weaponMeleeReachFists;
+    const float height = config::weaponMeleeHeight;
+    const float x = player_.facing > 0
+        ? player_.body.position.x + player_.body.size.x
+        : player_.body.position.x - reach;
+    const float y = player_.body.position.y + (player_.body.size.y - height) * 0.5F;
+    meleeRectPos_ = {x, y};
+    meleeRectSize_ = {reach, height};
+    meleeFlashTimer_ = 0.14F;
+    for (auto& enemy : enemies_) {
+        if (!enemy->alive || !enemy->dangerous()) continue;
+        if (physics::overlaps(meleeRectPos_, meleeRectSize_, enemy->body.position, enemy->body.size)) {
+            enemy->hitByWeapon(*this, damage);
+        }
+    }
+    spawnParticles(x + reach * 0.5F, y + height * 0.5F, {0.75F, 0.90F, 1.0F, 1.0F}, 6);
+}
+
+void Game::updateCombatEffects(float dt) {
+    meleeFlashTimer_ = std::max(0.0F, meleeFlashTimer_ - dt);
+    shopMessageTimer_ = std::max(0.0F, shopMessageTimer_ - dt);
+    weaponCooldown_ = std::max(0.0F, weaponCooldown_ - dt);
 }
 
 void Game::onBossDefeated(const Boss& boss) {
@@ -210,6 +324,214 @@ void Game::noteBossLock() {
     bossLockTimer_ = 1.2F;
 }
 
+Game::InteractTarget Game::findInteractTarget() const {
+    InteractTarget best;
+    float bestDistance = 1.0e9F;
+    const glm::vec2 playerCenter = player_.body.position + player_.body.size * 0.5F;
+    const auto& definition = level_->definition();
+    for (std::size_t i = 0; i < definition.shops.size(); ++i) {
+        const auto& shop = definition.shops[i];
+        const glm::vec2 center{shop.x * config::tileSize + 32.0F,
+                               shop.y * config::tileSize - 32.0F};
+        const float distance = std::hypot(center.x - playerCenter.x, center.y - playerCenter.y);
+        if (distance <= config::shopInteractRange && distance < bestDistance) {
+            best = {InteractKind::Shop, static_cast<int>(i)};
+            bestDistance = distance;
+        }
+    }
+    for (std::size_t i = 0; i < definition.chests.size(); ++i) {
+        if (i < chestOpened_.size() && chestOpened_[i]) continue;
+        const auto& chest = definition.chests[i];
+        const glm::vec2 center{chest.x * config::tileSize + 14.0F,
+                               chest.y * config::tileSize - 14.0F};
+        const float distance = std::hypot(center.x - playerCenter.x, center.y - playerCenter.y);
+        if (distance <= config::chestInteractRange && distance < bestDistance) {
+            best = {InteractKind::Chest, static_cast<int>(i)};
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+void Game::interact() {
+    if (state_ != GameState::Playing) return;
+    const InteractTarget target = findInteractTarget();
+    if (target.kind == InteractKind::Shop) openShop();
+    else if (target.kind == InteractKind::Chest) openChest(target.index);
+}
+
+void Game::openShop() {
+    if (state_ != GameState::Playing) return;
+    state_ = GameState::Shop;
+    shopCursor_ = 0;
+    showShopMessage("欢迎光临 左右选择 Enter 购买 F 离开");
+}
+
+void Game::closeShop() {
+    if (state_ != GameState::Shop) return;
+    state_ = GameState::Playing;
+    showShopMessage("");
+}
+
+void Game::updateShop() {
+    if (input_.pressed(Action::Left)) shopCursor_ = (shopCursor_ + shopItemCount - 1) % shopItemCount;
+    if (input_.pressed(Action::Right)) shopCursor_ = (shopCursor_ + 1) % shopItemCount;
+    if (input_.pressed(Action::Confirm)) buyShopItem(shopCursor_);
+    if (input_.pressed(Action::Interact) || input_.pressed(Action::Pause)) closeShop();
+}
+
+bool Game::buyShopItem(int index) {
+    if (index < 0 || index >= shopItemCount) return false;
+    const int weaponIndex = static_cast<int>(currentWeapon_);
+    const int cost = shopItemCost(index, weapons_.level[weaponIndex], maxHp_);
+    if (coins_ < cost) {
+        showShopMessage("金币不足");
+        return false;
+    }
+    switch (index) {
+    case 0:
+    case 1:
+    case 2: {
+        const WeaponType weapon = static_cast<WeaponType>(index + 1);
+        const int target = static_cast<int>(weapon);
+        if (weapons_.owned[target]) {
+            showShopMessage("已经拥有这把武器");
+            return false;
+        }
+        coins_ -= cost;
+        weapons_.owned[target] = true;
+        currentWeapon_ = weapon;
+        showShopMessage(std::string("获得 ") + weaponName(weapon));
+        break;
+    }
+    case 3:
+        if (weapons_.level[weaponIndex] >= 9) {
+            showShopMessage("当前武器已满级");
+            return false;
+        }
+        coins_ -= cost;
+        ++weapons_.level[weaponIndex];
+        showShopMessage(std::string("强化成功 ") + weaponName(currentWeapon_) + " Lv" +
+                        std::to_string(weapons_.level[weaponIndex]));
+        break;
+    case 4:
+        if (hp_ >= maxHp_) {
+            showShopMessage("体力已满");
+            return false;
+        }
+        coins_ -= cost;
+        heal(config::potionHeal);
+        showShopMessage("体力恢复");
+        break;
+    default:
+        if (maxHp_ >= config::maxHpCap) {
+            showShopMessage("体力已达上限");
+            return false;
+        }
+        coins_ -= cost;
+        maxHp_ = std::min(config::maxHpCap, maxHp_ + 10);
+        hp_ = std::min(maxHp_, hp_ + 10);
+        showShopMessage("体力上限提升");
+        break;
+    }
+    audio_.play(SoundEffect::Power);
+    saveGame(saveSlot_);
+    return true;
+}
+
+void Game::openChest(int index) {
+    const auto& chests = level_->definition().chests;
+    if (index < 0 || index >= static_cast<int>(chests.size())) return;
+    if (index < static_cast<int>(chestOpened_.size()) && chestOpened_[index]) {
+        showSaveMessage("箱子已打开");
+        return;
+    }
+    if (index >= static_cast<int>(chestOpened_.size())) chestOpened_.resize(chests.size(), false);
+    chestOpened_[static_cast<std::size_t>(index)] = true;
+    const int tier = std::max(1, chests[static_cast<std::size_t>(index)].tier);
+    coins_ += config::chestCoinReward * tier;
+    addScore(100 * tier);
+    heal(config::chestHeal * tier);
+    if (tier >= 2) {
+        const WeaponType weapon = static_cast<WeaponType>(1 + (index + levelIndex_) % 3);
+        const int weaponIndex = static_cast<int>(weapon);
+        if (!weapons_.owned[weaponIndex]) {
+            weapons_.owned[weaponIndex] = true;
+            currentWeapon_ = weapon;
+            showSaveMessage(std::string("箱子中获得 ") + weaponName(weapon));
+        } else if (weapons_.level[weaponIndex] < 9) {
+            ++weapons_.level[weaponIndex];
+            showSaveMessage(std::string("武器强化 ") + weaponName(weapon));
+        } else {
+            showSaveMessage("箱子中全是金币");
+        }
+    } else {
+        showSaveMessage("开启箱子 获得金币与体力");
+    }
+    audio_.play(SoundEffect::Coin);
+    saveGame(saveSlot_);
+}
+
+void Game::drawWorldInteractables(Renderer& renderer) const {
+    const auto& definition = level_->definition();
+    for (const auto& shop : definition.shops) {
+        const float x = shop.x * config::tileSize;
+        const float y = shop.y * config::tileSize - 64.0F;
+        renderer.drawRect(x, y, 64.0F, 64.0F, {0.42F, 0.25F, 0.12F, 1.0F});
+        renderer.drawRect(x - 6.0F, y - 8.0F, 76.0F, 16.0F, {0.85F, 0.25F, 0.20F, 1.0F});
+        renderer.drawRect(x + 14.0F, y + 34.0F, 36.0F, 30.0F, {0.14F, 0.10F, 0.10F, 1.0F});
+        renderer.drawText("商店", x + 12.0F, y + 6.0F, 14.0F, {1.0F, 0.94F, 0.55F, 1.0F});
+    }
+    for (std::size_t i = 0; i < definition.chests.size(); ++i) {
+        const auto& chest = definition.chests[i];
+        const bool opened = i < chestOpened_.size() && chestOpened_[i];
+        const float x = chest.x * config::tileSize;
+        const float y = chest.y * config::tileSize - 28.0F;
+        renderer.drawRect(x, y, 28.0F, 28.0F,
+                          opened ? glm::vec4{0.30F, 0.24F, 0.18F, 1.0F}
+                                 : glm::vec4{0.86F, 0.62F, 0.16F, 1.0F});
+        renderer.drawRect(x, y + 10.0F, 28.0F, 4.0F, {0.40F, 0.22F, 0.08F, 1.0F});
+        if (!opened) renderer.drawRect(x + 12.0F, y + 9.0F, 4.0F, 8.0F, {1.0F, 0.92F, 0.35F, 1.0F});
+    }
+}
+
+void Game::drawInteractionPrompt(Renderer& renderer) const {
+    if (state_ != GameState::Playing) return;
+    const InteractTarget target = findInteractTarget();
+    if (target.kind == InteractKind::None) return;
+    const std::string prompt = target.kind == InteractKind::Shop
+        ? "按 F 进入商店" : "按 F 开启箱子";
+    renderer.drawTextCentered(prompt, 482, 16, {1.0F, 0.92F, 0.42F, 1.0F});
+}
+
+void Game::drawShop(Renderer& renderer) const {
+    renderer.drawRect(0, 0, config::logicalWidth, config::logicalHeight, {0.02F, 0.05F, 0.11F, 0.90F});
+    renderer.drawTextCentered("冒险者商店", 72, 34, {1.0F, 0.86F, 0.25F, 1.0F});
+    renderer.drawTextCentered("金币 " + std::to_string(coins_) + "   当前武器 " +
+                                  weaponName(currentWeapon_) + " Lv" +
+                                  std::to_string(weapons_.level[static_cast<int>(currentWeapon_)]),
+                              118, 17, {0.75F, 0.92F, 1.0F, 1.0F});
+    const int weaponIndex = static_cast<int>(currentWeapon_);
+    for (int i = 0; i < shopItemCount; ++i) {
+        const bool chosen = i == shopCursor_;
+        const float y = 160.0F + static_cast<float>(i) * 48.0F;
+        renderer.drawRect(170.0F, y, 620.0F, 40.0F,
+                          chosen ? glm::vec4{0.18F, 0.34F, 0.48F, 0.95F}
+                                 : glm::vec4{0.08F, 0.12F, 0.19F, 0.90F});
+        const std::string prefix = chosen ? "> " : "  ";
+        const int cost = shopItemCost(i, weapons_.level[weaponIndex], maxHp_);
+        renderer.drawTextCentered(prefix + shopItemName(i) + "   " + std::to_string(cost) + " 金币",
+                                  y + 9.0F, 17,
+                                  chosen ? glm::vec4{1.0F, 0.94F, 0.45F, 1.0F}
+                                         : glm::vec4{0.86F, 0.88F, 0.94F, 1.0F});
+    }
+    renderer.drawTextCentered("左右选择 Enter 购买 F 或 P 离开", 470, 16, {0.72F, 0.82F, 0.92F, 1.0F});
+    if (shopMessageTimer_ > 0.0F && !shopMessage_.empty()) {
+        renderer.drawTextCentered(shopMessage_, 505, 16,
+                                  {0.55F, 1.0F, 0.65F, std::min(1.0F, shopMessageTimer_ * 2.0F)});
+    }
+}
+
 void Game::startRun(const RunOptions& options) {
     options_ = options;
     endlessMode_ = options.mode == GameMode::Endless;
@@ -221,6 +543,9 @@ void Game::startRun(const RunOptions& options) {
     coins_ = 0;
     maxHp_ = config::initialMaxHp;
     hp_ = maxHp_;
+    weapons_ = WeaponState{};
+    currentWeapon_ = WeaponType::Fists;
+    weaponCooldown_ = 0.0F;
     xp_ = 0;
     playerLevel_ = 1;
     pendingLevelUps_ = 0;
@@ -276,8 +601,10 @@ void Game::loadLevel(int index, bool useCheckpoint) {
     enemies_.clear();
     fireballs_.clear();
     bossShots_.clear();
+    playerShots_.clear();
     platforms_.clear();
     particles_.clear();
+    chestOpened_.assign(level_->definition().chests.size(), false);
     checkpointActive_ = useCheckpoint;
     timeLeft_ = level_->definition().timeLimit > 0.0F ? level_->definition().timeLimit : config::levelTime;
     fireCooldown_ = 0.0F;
@@ -404,8 +731,8 @@ void Game::applyTalent(TalentId talent) {
         player_.talents.magnet = std::min(240.0F, player_.talents.magnet + 40.0F);
         break;
     case TalentId::Heart:
-        maxHp_ = std::min(config::maxHpCap, maxHp_ + 1);
-        heal(1);
+        maxHp_ = std::min(config::maxHpCap, maxHp_ + 10);
+        heal(10);
         player_.invincible = std::max(player_.invincible, 1.5F);
         break;
     case TalentId::Bounce: player_.talents.stompBounce *= 1.15F; break;
@@ -420,16 +747,14 @@ void Game::heal(int amount) {
 void Game::damagePlayer(int amount, bool ignoreInvincible) {
     if (state_ != GameState::Playing || player_.dead) return;
     if (!ignoreInvincible && (player_.invincible > 0.0F || player_.starTime > 0.0F)) return;
-    hp_ -= std::max(1, amount);
+    hp_ = std::max(0, hp_ - std::max(1, amount));
     spawnParticles(player_.body.position.x + player_.body.size.x * 0.5F,
                    player_.body.position.y + player_.body.size.y * 0.5F,
                    {1.0F, 0.28F, 0.25F, 1.0F}, 10);
     if (hp_ <= 0) {
-        hp_ = 0;
         player_.die(*this);
         return;
     }
-    player_.downgrade();
     player_.invincible = config::damageInvincibleTime;
     audio_.play(SoundEffect::Power);
     saveGame(saveSlot_);
@@ -437,9 +762,8 @@ void Game::damagePlayer(int amount, bool ignoreInvincible) {
 
 void Game::fallOut() {
     if (state_ != GameState::Playing || player_.dead) return;
-    --hp_;
+    hp_ = std::max(0, hp_ - config::fallDamage);
     if (hp_ <= 0) {
-        hp_ = 0;
         player_.die(*this);
         return;
     }
@@ -449,16 +773,14 @@ void Game::fallOut() {
 }
 
 void Game::respawnAfterDamage() {
-    const PowerState currentPower = player_.power;
     const glm::vec2 start = checkpointActive_
         ? glm::vec2{level_->checkpointX(), 15.0F * config::tileSize}
         : level_->playerStart();
     player_.reset(start);
-    if (currentPower == PowerState::Fire) player_.setPower(PowerState::Big);
-    else if (currentPower == PowerState::Big) player_.setPower(PowerState::Small);
     player_.invincible = config::damageInvincibleTime * 1.2F;
     fireballs_.clear();
     bossShots_.clear();
+    playerShots_.clear();
     updateCamera();
 }
 
@@ -466,6 +788,7 @@ void Game::update(float dt) {
     if (input_.pressed(Action::Mute)) audio_.toggleMute();
     saveMessageTimer_ = std::max(0.0F, saveMessageTimer_ - dt);
     bossLockTimer_ = std::max(0.0F, bossLockTimer_ - dt);
+    updateCombatEffects(dt);
     if (input_.pressed(Action::Save) && state_ != GameState::Title &&
         state_ != GameState::Dying && state_ != GameState::GameOver) {
         saveGame(saveSlot_);
@@ -487,6 +810,10 @@ void Game::update(float dt) {
         break;
     case GameState::LevelUp:
         updateLevelUp();
+        updateParticles(dt);
+        break;
+    case GameState::Shop:
+        updateShop();
         updateParticles(dt);
         break;
     case GameState::Dying:
@@ -548,6 +875,7 @@ void Game::updatePlaying(float dt) {
     for (auto& enemy : enemies_) if (enemy->alive) enemy->update(dt, *this);
     for (auto& fireball : fireballs_) if (fireball->alive) fireball->update(dt, *this);
     for (auto& shot : bossShots_) if (shot->alive) shot->update(dt, *this);
+    for (auto& shot : playerShots_) if (shot->alive) shot->update(dt, *this);
     attractCoins(dt);
     handleCollisions(previousBottom);
     updateParticles(dt);
@@ -587,7 +915,7 @@ void Game::handleCollisions(float previousPlayerBottom) {
             audio_.play(SoundEffect::Power);
             break;
         case ItemType::OneUp:
-            heal(1);
+            heal(config::potionHeal);
             addScore(1000);
             audio_.play(SoundEffect::Power);
             spawnParticles(item->body.position.x + 12.0F, item->body.position.y,
@@ -626,10 +954,22 @@ void Game::handleCollisions(float previousPlayerBottom) {
         }
     }
 
+    for (auto& shot : playerShots_) {
+        if (!shot->alive) continue;
+        for (auto& enemy : enemies_) {
+            if (!enemy->dangerous() || std::abs(enemy->body.position.x - shot->body.position.x) > 96.0F) continue;
+            if (!physics::overlaps(shot->body, enemy->body)) continue;
+            enemy->hitByWeapon(*this, shot->damage());
+            shot->alive = false;
+            audio_.play(SoundEffect::Stomp);
+            break;
+        }
+    }
+
     for (auto& shot : bossShots_) {
         if (!shot->alive || !physics::overlaps(player_.body, shot->body)) continue;
         shot->alive = false;
-        damagePlayer(1, false);
+        damagePlayer(shot->damage(), false);
         if (player_.dead || state_ != GameState::Playing) break;
     }
 
@@ -655,8 +995,7 @@ void Game::handleCollisions(float previousPlayerBottom) {
             koopa->kick(direction, *this);
             continue;
         }
-        player_.hurt(*this);
-        if (player_.dead || state_ != GameState::Playing) break;
+        // 身体接触不再造成伤害；伤害只来自敌人的近战判定或投射物。
     }
 }
 
@@ -729,11 +1068,8 @@ void Game::addXP(int baseAmount) {
 }
 
 void Game::addCoin() {
+    // 金币现在是商店货币，不再自动兑换体力。
     ++coins_;
-    if (coins_ >= 100) {
-        coins_ -= 100;
-        heal(1);
-    }
     addScore(200);
     audio_.play(SoundEffect::Coin);
 }
@@ -788,6 +1124,7 @@ void Game::cleanupEntities() {
     removeDead(enemies_);
     removeDead(fireballs_);
     removeDead(bossShots_);
+    removeDead(playerShots_);
 }
 
 void Game::updateCamera() {
@@ -848,6 +1185,7 @@ void Game::render(Renderer& renderer) {
     drawBackground(renderer);
     renderer.setCamera(cameraX_);
     level_->draw(renderer, cameraX_, flagDrop_, checkpointActive_);
+    drawWorldInteractables(renderer);
     for (const auto& platform : platforms_) platform.draw(renderer);
     const auto visible = [this](const Body& body) {
         return body.position.x + body.size.x > cameraX_ - 80.0F &&
@@ -857,7 +1195,13 @@ void Game::render(Renderer& renderer) {
     for (const auto& enemy : enemies_) if (enemy->alive && visible(enemy->body)) enemy->draw(renderer);
     for (const auto& fireball : fireballs_) if (fireball->alive && visible(fireball->body)) fireball->draw(renderer);
     for (const auto& shot : bossShots_) if (shot->alive && visible(shot->body)) shot->draw(renderer);
+    for (const auto& shot : playerShots_) if (shot->alive && visible(shot->body)) shot->draw(renderer);
     if (visible(player_.body) || player_.dead) player_.draw(renderer);
+    if (meleeFlashTimer_ > 0.0F) {
+        renderer.drawRect(meleeRectPos_.x, meleeRectPos_.y,
+                          meleeRectSize_.x, meleeRectSize_.y,
+                          {0.65F, 0.90F, 1.0F, 0.38F * std::min(1.0F, meleeFlashTimer_ / 0.14F)});
+    }
     for (const auto& particle : particles_) {
         renderer.drawRect(particle.position.x, particle.position.y, particle.size, particle.size,
                           {particle.color.r, particle.color.g, particle.color.b,
@@ -881,11 +1225,10 @@ void Game::drawHud(Renderer& renderer) {
                       timeLeft_ < 60.0F ? glm::vec4{1.0F, 0.35F, 0.25F, 1} : glm::vec4{1.0F});
     renderer.drawText("体力 " + std::to_string(hp_) + "/" + std::to_string(maxHp_), 790, 8, 18,
                       {1.0F, 0.45F, 0.42F, 1});
-    for (int i = 0; i < maxHp_; ++i) {
-        renderer.drawRect(790.0F + i * 14.0F, 32.0F, 10.0F, 10.0F,
-                          i < hp_ ? glm::vec4{0.95F, 0.24F, 0.22F, 1.0F}
-                                  : glm::vec4{0.28F, 0.30F, 0.36F, 1.0F});
-    }
+    renderer.drawRect(790.0F, 32.0F, 150.0F, 8.0F, {0.28F, 0.30F, 0.36F, 1.0F});
+    renderer.drawRect(790.0F, 32.0F,
+                      150.0F * static_cast<float>(hp_) / static_cast<float>(maxHp_), 8.0F,
+                      {0.95F, 0.24F, 0.22F, 1.0F});
 
     const int required = xpRequired(playerLevel_);
     renderer.drawText("等级 " + padded(playerLevel_, 2) + " 经验 " + padded(xp_, 3) + "/" +
@@ -898,6 +1241,12 @@ void Game::drawHud(Renderer& renderer) {
                       420, 36, 14,
                       player_.skillReady() ? glm::vec4{0.48F, 1.0F, 0.58F, 1}
                                            : glm::vec4{0.78F, 0.78F, 0.82F, 1});
+    renderer.drawText("武器 " + std::string(weaponName(currentWeapon_)) + " Lv" +
+                          std::to_string(weapons_.level[static_cast<int>(currentWeapon_)]) +
+                          (weaponCooldown_ > 0.0F ? " 冷却" : " 就绪"),
+                      650, 36, 14,
+                      weaponCooldown_ > 0.0F ? glm::vec4{0.78F, 0.78F, 0.82F, 1}
+                                            : glm::vec4{0.55F, 0.92F, 1.0F, 1});
     renderer.drawRect(18, 58, 200, 3, {0.18F, 0.22F, 0.30F, 1});
     renderer.drawRect(18, 58, 200.0F * static_cast<float>(xp_) / static_cast<float>(required), 3,
                       {0.35F, 0.85F, 1.0F, 1});
@@ -958,8 +1307,9 @@ void Game::drawOverlay(Renderer& renderer) {
                                   322, 15, {0.55F, 0.92F, 1.0F, 1});
         renderer.drawTextCentered("最高分 " + padded(highScore_, 6), 352, 17,
                                   {1.0F, 0.86F, 0.25F, 1});
-        renderer.drawTextCentered("方向键或 AD 移动 空格或 W 跳跃 C 或 Z 技能", 406, 13);
-        renderer.drawTextCentered("F5 保存 F9 或 L 读取 P 暂停 M 静音", 432, 13);
+        renderer.drawTextCentered("方向键或 AD 移动 空格或 W 跳跃 C 或 Z 技能", 398, 13);
+        renderer.drawTextCentered("J 攻击 Q 换武器 F 商店或箱子 F5 保存 F9 读取", 422, 13);
+        renderer.drawTextCentered("P 暂停 M 静音", 446, 13);
         renderer.drawTextCentered("按 Enter 开始", 480, 19, {1.0F, 0.91F, 0.36F, 1});
     } else if (state_ == GameState::Paused) {
         renderer.drawRect(0, 0, config::logicalWidth, config::logicalHeight, {0, 0, 0, 0.58F});
@@ -995,6 +1345,8 @@ void Game::drawOverlay(Renderer& renderer) {
         renderer.drawTextCentered("角色等级 " + std::to_string(playerLevel_), 280, 18,
                                   {0.55F, 0.92F, 1.0F, 1});
         renderer.drawTextCentered("按 Enter 重新开始 L 读取存档", 335, 20);
+    } else if (state_ == GameState::Shop) {
+        drawShop(renderer);
     } else if (state_ == GameState::Won) {
         renderer.drawRect(0, 0, config::logicalWidth, config::logicalHeight, {0.03F, 0.08F, 0.13F, 0.80F});
         renderer.drawTextCentered("感谢游玩！", 140, 38, {1.0F, 0.86F, 0.22F, 1});
@@ -1006,7 +1358,12 @@ void Game::drawOverlay(Renderer& renderer) {
         renderer.drawTextCentered("先击败首领才能通过旗杆", 112, 18,
                                   {1.0F, 0.38F, 0.30F, std::min(1.0F, bossLockTimer_ * 2.0F)});
     }
-    if (saveMessageTimer_ > 0.0F) {
+    if (state_ == GameState::Playing) drawInteractionPrompt(renderer);
+    if (state_ != GameState::Shop && shopMessageTimer_ > 0.0F && !shopMessage_.empty()) {
+        renderer.drawTextCentered(shopMessage_, 458, 16,
+                                  {0.55F, 0.92F, 1.0F, std::min(1.0F, shopMessageTimer_ * 2.0F)});
+    }
+    if (state_ != GameState::Shop && saveMessageTimer_ > 0.0F) {
         renderer.drawTextCentered(saveMessage_, 505, 16,
                                   {0.55F, 1.0F, 0.65F, std::min(1.0F, saveMessageTimer_ * 2.0F)});
     }

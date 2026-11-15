@@ -70,6 +70,19 @@ struct BossPlacement {
     int level = 1;
 };
 
+// 商店：x/y 为瓦片坐标，默认站在地面所在行（15）。
+struct ShopPlacement {
+    float x = 0.0F;
+    float y = 15.0F;
+};
+
+// 箱子：tier 决定稀有度档位，默认站在地面所在行（15）。
+struct ChestPlacement {
+    float x = 0.0F;
+    float y = 15.0F;
+    int tier = 1;
+};
+
 // 正弦往复平台。axis 决定运动方向，rangeTiles 为离中心点的振幅。
 struct MovingPlatformPlacement {
     float x = 0.0F;
@@ -98,6 +111,8 @@ struct LevelDef {
     std::vector<CoinPlacement> coins;
     std::vector<MovingPlatformPlacement> platforms;
     std::vector<BossPlacement> bosses;
+    std::vector<ShopPlacement> shops;
+    std::vector<ChestPlacement> chests;
 };
 
 enum class TileHitKind { None, Bump, Break, Coin, Mushroom, Flower, OneUp, Star };

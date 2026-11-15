@@ -52,3 +52,16 @@ const char* talentDescription(TalentId talent);
 // 三级天赋每次提供不重复的三选一；相同等级与槽位始终给出相同选项，便于复现。
 TalentId talentChoice(int level, int slot);
 int xpRequired(int level);
+
+// 武器制：四种武器，拳头默认持有；其余需购买，等级可用金币升级。
+enum class WeaponType { Fists, Sword, Bow, Wand, Count };
+struct WeaponState {
+    bool owned[4] = {true, false, false, false};
+    int level[4] = {1, 1, 1, 1};
+};
+const char* weaponName(WeaponType weapon);
+int weaponBaseDamage(WeaponType weapon);
+float weaponCooldown(WeaponType weapon);
+bool weaponRanged(WeaponType weapon);
+int weaponPrice(WeaponType weapon);
+int weaponUpgradeCost(int currentLevel);

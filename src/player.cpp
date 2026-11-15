@@ -90,6 +90,9 @@ void Player::update(float dt, Game& game) {
     Input& input = game.input();
     if (input.pressed(Action::Jump)) jumpBuffer_ = config::jumpBufferTime;
     if (input.pressed(Action::Skill)) useSkill(game);
+    if (input.pressed(Action::SwitchWeapon)) game.cycleWeapon();
+    if (input.pressed(Action::Attack)) game.performAttack();
+    if (input.pressed(Action::Interact)) game.interact();
 
     const float direction = (input.down(Action::Right) ? 1.0F : 0.0F) -
                             (input.down(Action::Left) ? 1.0F : 0.0F);

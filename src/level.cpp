@@ -49,6 +49,41 @@ void placeBoss(LevelDef& def, BossType type, int level) {
     def.bosses.push_back({type, x, 15.0F, level});
 }
 
+// 判断某个瓦片列是否有地面段覆盖，且目标行不高于地面顶行。
+bool groundSupports(const LevelDef& def, int tx, int ty) {
+    for (const auto& g : def.grounds) {
+        if (tx >= g.first && tx <= g.last && ty <= g.top) return true;
+    }
+    return false;
+}
+
+// 在 preferredX 附近找一个受地面支撑、且避开 Boss 竞技场的瓦片列。
+// 优先原值，再向两侧各搜索最多 12 格；找不到时退回第一段地面起点 + 2。
+float findPlacementX(const LevelDef& def, float preferredX) {
+    const int base = static_cast<int>(std::lround(preferredX));
+    const int arenaCenter = static_cast<int>(def.flagX) - 20;
+    const auto valid = [&](int x) {
+        if (x < 0 || x >= def.widthTiles) return false;
+        if (x >= arenaCenter - 8 && x <= arenaCenter + 8) return false;
+        return groundSupports(def, x, 15);
+    };
+    if (valid(base)) return static_cast<float>(base);
+    for (int offset = 1; offset <= 12; ++offset) {
+        if (valid(base + offset)) return static_cast<float>(base + offset);
+        if (valid(base - offset)) return static_cast<float>(base - offset);
+    }
+    if (!def.grounds.empty()) return static_cast<float>(def.grounds.front().first + 2);
+    return preferredX;
+}
+
+void placeShop(LevelDef& def, float preferredX) {
+    def.shops.push_back({findPlacementX(def, preferredX), 15.0F});
+}
+
+void placeChest(LevelDef& def, float preferredX, int tier) {
+    def.chests.push_back({findPlacementX(def, preferredX), 15.0F, tier});
+}
+
 LevelDef firstLevel() {
     LevelDef d;
     d.widthTiles = 224;
@@ -673,6 +708,10 @@ LevelDef makeEndlessLevelDefinition(int zone, std::uint32_t seed, int difficulty
     const BossType bossType = static_cast<BossType>((safeZone - 1) % 3);
     const int bossLevel = 2 + safeZone + safeDifficulty * 2;
     placeBoss(d, bossType, bossLevel);
+    // 每个生成关至少 1 个商店、2 个箱子；placeBoss 补足地面后再取支撑位置。
+    placeShop(d, 12.0F);
+    placeChest(d, 24.0F, 1);
+    placeChest(d, static_cast<float>(d.widthTiles / 2 - 4), 2 + safeZone / 4);
     return d;
 }
 
@@ -696,6 +735,10 @@ LevelDef makeLevelDefinition(int index) {
     default: break;
     }
     assignEnemyLevels(d, 1 + std::clamp(index, 0, config::levelCount - 1));
+    // 剧情关统一布置商店与箱子，placeBoss 补足地面后再取支撑位置。
+    placeShop(d, 12.0F);
+    placeChest(d, 24.0F, 1);
+    placeChest(d, d.checkpointX - 6.0F, 2);
     return d;
 }
 
@@ -757,6 +800,23 @@ std::string validateLevelDefinition(const LevelDef& d) {
         if (p.y < 1.0F || p.y > static_cast<float>(config::levelHeightTiles)) return fail("platform height invalid");
         if (p.widthTiles < 1 || p.widthTiles > 8) return fail("platform width invalid");
         if (p.rangeTiles < 0.0F || p.speed <= 0.0F) return fail("platform motion invalid");
+    }
+    if (d.shops.empty()) return fail("no shop");
+    if (d.chests.size() < 2U) return fail("not enough chests");
+    for (const auto& s : d.shops) {
+        if (s.x < 0.0F || s.x >= static_cast<float>(d.widthTiles)) return fail("shop out of bounds");
+        if (s.y < 1.0F || s.y > static_cast<float>(config::levelHeightTiles)) return fail("shop height invalid");
+        const int tx = static_cast<int>(std::floor(s.x));
+        const int ty = static_cast<int>(std::floor(s.y));
+        if (!groundSupports(d, tx, ty)) return fail("shop has no ground support");
+    }
+    for (const auto& c : d.chests) {
+        if (c.x < 0.0F || c.x >= static_cast<float>(d.widthTiles)) return fail("chest out of bounds");
+        if (c.y < 1.0F || c.y > static_cast<float>(config::levelHeightTiles)) return fail("chest height invalid");
+        if (c.tier < 1 || c.tier > 99) return fail("chest tier invalid");
+        const int tx = static_cast<int>(std::floor(c.x));
+        const int ty = static_cast<int>(std::floor(c.y));
+        if (!groundSupports(d, tx, ty)) return fail("chest has no ground support");
     }
     return {};
 }

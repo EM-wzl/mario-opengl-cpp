@@ -28,6 +28,45 @@ void Enemy::tick(float dt) {
     hitFlash_ = std::max(0.0F, hitFlash_ - dt);
 }
 
+void Enemy::configureCombat(int baseDamage, float range, float cooldown, bool ranged) {
+    combatDamage_ = std::max(1, baseDamage);
+    attackRange_ = std::max(24.0F, range);
+    attackCooldown_ = std::max(0.25F, cooldown);
+    rangedAttack_ = ranged;
+    attackTimer_ = 0.4F;
+}
+
+int Enemy::combatDamage() const {
+    return combatDamage_ + levelValue() * 2;
+}
+
+void Enemy::updateCombat(float dt, Game& game) {
+    attackTimer_ = std::max(0.0F, attackTimer_ - dt);
+    if (!alive || attackTimer_ > 0.0F) return;
+    const glm::vec2 playerCenter = game.player().body.position + game.player().body.size * 0.5F;
+    const glm::vec2 selfCenter = body.position + body.size * 0.5F;
+    const glm::vec2 delta = playerCenter - selfCenter;
+    const float distance = std::hypot(delta.x, delta.y);
+    if (distance > attackRange_) return;
+
+    const int direction = delta.x >= 0.0F ? 1 : -1;
+    const int damage = combatDamage();
+    if (rangedAttack_) {
+        game.spawnBossShot(selfCenter.x + direction * 16.0F,
+                           selfCenter.y,
+                           direction * config::bossShotSpeed, 0.0F, 2, damage);
+    } else {
+        game.spawnBossShot(selfCenter.x + direction * 28.0F,
+                           selfCenter.y, 0.0F, 0.0F, 3, damage);
+    }
+    attackTimer_ = attackCooldown_;
+}
+
+void Enemy::hitByWeapon(Game& game, int damage) {
+    if (!applyDamage(game, damage)) return;
+    defeat(game);
+}
+
 bool Enemy::applyDamage(Game& game, int amount) {
     if (!alive || hitPoints_ <= 0) return false;
     hitPoints_ -= std::max(1, amount);
@@ -93,6 +132,8 @@ Goomba::Goomba(float x, float groundY) {
     body.size = {30.0F, 30.0F};
     body.position = {x, groundY - body.size.y};
     body.velocity.x = -config::enemyWalkSpeed;
+    configureCombat(config::enemyMeleeDamage, config::enemyAttackRangeMelee,
+                    config::enemyMeleeCooldown, false);
 }
 
 void Goomba::update(float dt, Game& game) {
@@ -109,6 +150,7 @@ void Goomba::update(float dt, Game& game) {
     const auto collision = physics::moveBody(body, game.level(), dt);
     if (collision.hitLeft || collision.hitRight) facing *= -1;
     if (body.position.y > config::levelHeightTiles * config::tileSize + 120.0F) alive = false;
+    updateCombat(dt, game);
 }
 
 void Goomba::draw(Renderer& renderer) const {
@@ -138,6 +180,8 @@ Koopa::Koopa(float x, float groundY) {
     body.size = {28.0F, 42.0F};
     body.position = {x, groundY - body.size.y};
     body.velocity.x = -config::enemyWalkSpeed;
+    configureCombat(config::enemyMeleeDamage + 2, config::enemyAttackRangeMelee + 4.0F,
+                    config::enemyMeleeCooldown + 0.2F, false);
 }
 
 void Koopa::update(float dt, Game& game) {
@@ -159,6 +203,7 @@ void Koopa::update(float dt, Game& game) {
         if (state_ == KoopaState::Sliding) game.audio().play(SoundEffect::Kick);
     }
     if (body.position.y > config::logicalHeight + 200.0F) alive = false;
+    updateCombat(dt, game);
 }
 
 void Koopa::draw(Renderer& renderer) const {
@@ -222,6 +267,8 @@ Piranha::Piranha(float centerX, float pipeTopY) : pipeTopY_(pipeTopY) {
     body.size = {28.0F, 46.0F};
     body.position = {centerX - body.size.x * 0.5F, pipeTopY_};
     collidable = false;
+    configureCombat(config::enemyRangedDamage + 2, config::enemyAttackRangeRanged,
+                    config::enemyRangedCooldown, true);
 }
 
 void Piranha::update(float dt, Game& game) {
@@ -253,6 +300,7 @@ void Piranha::update(float dt, Game& game) {
     }
     body.position.y = pipeTopY_ - body.size.y * extension_;
     collidable = extension_ > 0.35F;
+    if (collidable) updateCombat(dt, game);
 }
 
 void Piranha::draw(Renderer& renderer) const {
@@ -274,6 +322,8 @@ Paratroopa::Paratroopa(float x, float groundY) {
     baseY_ = body.position.y;
     body.velocity.x = -96.0F;
     facing = -1;
+    configureCombat(config::enemyRangedDamage, config::enemyAttackRangeRanged - 30.0F,
+                    config::enemyRangedCooldown + 0.3F, true);
 }
 
 void Paratroopa::update(float dt, Game& game) {
@@ -284,6 +334,7 @@ void Paratroopa::update(float dt, Game& game) {
     const auto collision = physics::moveBody(body, game.level(), dt);
     if (collision.hitLeft || collision.hitRight) facing *= -1;
     body.position.y = baseY_ + std::sin(time_ * 2.24F) * 58.0F;
+    updateCombat(dt, game);
 }
 
 void Paratroopa::draw(Renderer& renderer) const {
@@ -315,6 +366,8 @@ Spiny::Spiny(float x, float groundY) {
     body.size = {30.0F, 28.0F};
     body.position = {x, groundY - body.size.y};
     body.velocity.x = -config::enemyWalkSpeed;
+    configureCombat(config::enemyMeleeDamage + 4, config::enemyAttackRangeMelee,
+                    config::enemyMeleeCooldown + 0.4F, false);
 }
 
 void Spiny::update(float dt, Game& game) {
@@ -326,6 +379,7 @@ void Spiny::update(float dt, Game& game) {
     const auto collision = physics::moveBody(body, game.level(), dt);
     if (collision.hitLeft || collision.hitRight) facing *= -1;
     if (body.position.y > config::levelHeightTiles * config::tileSize + 120.0F) alive = false;
+    updateCombat(dt, game);
 }
 
 void Spiny::draw(Renderer& renderer) const {
@@ -378,6 +432,8 @@ Boss::Boss(BossType type, float x, float groundY, int level) : type_(type) {
     collidable = true;
     attackTimer_ = config::bossAttackInterval;
     jumpTimer_ = 1.2F;
+    configureCombat(14, config::enemyAttackRangeRanged + 60.0F,
+                    config::bossAttackInterval, true);
 }
 
 const char* Boss::bossName() const {
@@ -414,6 +470,7 @@ void Boss::update(float dt, Game& game) {
                                 game.player().body.size.x * 0.5F;
     const float centerX = body.position.x + body.size.x * 0.5F;
     const int shotDir = playerCenterX < centerX ? -1 : 1;
+    const int shotDamage = combatDamage();
 
     // 先做地面边缘折返，让本帧速度立即使用修正后的朝向（定点型不参与）。
     if (body.onGround && (type_ == BossType::BoomBoom || type_ == BossType::Bowser) &&
@@ -441,7 +498,7 @@ void Boss::update(float dt, Game& game) {
         }
         if (attackTimer_ <= 0.0F) {
             game.spawnBossShot(centerX, body.position.y + body.size.y * 0.35F,
-                               shotDir * config::bossShotSpeed, -30.0F, 0);
+                               shotDir * config::bossShotSpeed, -30.0F, 0, shotDamage);
             attackTimer_ = attackInterval;
             game.audio().play(SoundEffect::Fire);
         }
@@ -461,7 +518,7 @@ void Boss::update(float dt, Game& game) {
         if (fireBurst_ > 0 && burstTimer_ <= 0.0F) {
             const float vy = static_cast<float>(fireBurst_ - 2) * 26.0F;
             game.spawnBossShot(centerX, body.position.y + body.size.y * 0.30F,
-                               shotDir * config::bossShotSpeed * 1.25F, vy, 1);
+                               shotDir * config::bossShotSpeed * 1.25F, vy, 1, shotDamage);
             --fireBurst_;
             burstTimer_ = config::bossFireBurstGap;
             game.audio().play(SoundEffect::Fire);
@@ -496,6 +553,10 @@ void Boss::stomped(Game& game) {
 
 void Boss::hitByFire(Game& game) {
     takeDamage(game, 1);
+}
+
+void Boss::hitByWeapon(Game& game, int damage) {
+    takeDamage(game, damage);
 }
 
 void Boss::killByStar(Game& game) {
@@ -555,8 +616,11 @@ void Boss::draw(Renderer& renderer) const {
     drawBadge(renderer);  // 等级徽章与血条
 }
 
-BossShot::BossShot(float x, float y, float vx, float vy, int kind) : kind_(kind) {
-    body.size = {kind == 0 ? 18.0F : 20.0F, 20.0F};
+BossShot::BossShot(float x, float y, float vx, float vy, int kind, int damage)
+    : kind_(kind), damage_(std::max(1, damage)) {
+    if (kind_ == 3) body.size = {48.0F, 42.0F};
+    else if (kind_ == 2) body.size = {18.0F, 18.0F};
+    else body.size = {kind_ == 0 ? 18.0F : 20.0F, 20.0F};
     body.position = {x - body.size.x * 0.5F, y - body.size.y * 0.5F};
     body.velocity = {vx, vy};
     facing = vx >= 0.0F ? 1 : -1;
@@ -566,13 +630,17 @@ BossShot::BossShot(float x, float y, float vx, float vy, int kind) : kind_(kind)
 void BossShot::update(float dt, Game& game) {
     life_ += dt;
     animationTime_ += dt;
+    if (kind_ == 3) {
+        // 近战判定只短暂存在，不移动、不参与地形碰撞。
+        if (life_ > 0.22F) alive = false;
+        return;
+    }
     if (kind_ == 0) {
-        // 蛋走抛物线；火焰保持直线飞行，仅带轻微扇形角度。
+        // 蛋走抛物线；其余投射物保持直线飞行。
         body.velocity.y = std::min(body.velocity.y + config::bossShotGravity * dt,
                                    config::maxFallSpeed);
     }
     const auto collision = physics::moveBody(body, game.level(), dt);
-    // 命中任意地形或寿命耗尽即消失。
     if (collision.hitLeft || collision.hitRight || collision.hitGround || collision.hitHead ||
         life_ > config::bossShotLife ||
         body.position.y > config::levelHeightTiles * config::tileSize + 80.0F) {
@@ -581,11 +649,20 @@ void BossShot::update(float dt, Game& game) {
 }
 
 void BossShot::draw(Renderer& renderer) const {
+    if (kind_ == 3) {
+        const float alpha = std::max(0.0F, 1.0F - life_ / 0.22F);
+        renderer.drawRect(body.position.x, body.position.y, body.size.x, body.size.y,
+                          {1.0F, 0.22F, 0.16F, 0.55F * alpha});
+        renderer.drawRect(body.position.x + 4.0F, body.position.y + 4.0F,
+                          body.size.x - 8.0F, body.size.y - 8.0F,
+                          {1.0F, 0.68F, 0.22F, 0.45F * alpha});
+        return;
+    }
     const float pulse = 1.0F + std::sin(animationTime_ * 22.0F) * 0.10F;
     const float size = body.size.x * pulse;
-    const glm::vec4 tint = kind_ == 0
-        ? glm::vec4{1.0F, 0.93F, 0.78F, 1.0F}   // 蛋：乳白
-        : glm::vec4{1.0F, 0.42F, 0.12F, 1.0F};  // 火焰：橙红
+    glm::vec4 tint{1.0F, 0.42F, 0.12F, 1.0F};
+    if (kind_ == 0) tint = {1.0F, 0.93F, 0.78F, 1.0F};
+    else if (kind_ == 2) tint = {0.72F, 0.45F, 1.0F, 1.0F};
     renderer.drawSprite(Sprite::Fireball,
                         body.position.x + (body.size.x - size) * 0.5F,
                         body.position.y + (body.size.y - size) * 0.5F,

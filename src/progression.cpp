@@ -22,6 +22,29 @@ constexpr std::array<TalentInfo, talentCount> talents{{
     {"额外体力", "体力上限 +1"},
     {"踏跃", "踩踏反弹 +15"}
 }};
+
+constexpr int weaponCount = static_cast<int>(WeaponType::Count);
+
+struct WeaponInfo {
+    const char* name;
+    int baseDamage;
+    float cooldown;
+    bool ranged;
+    int price;
+};
+
+constexpr std::array<WeaponInfo, weaponCount> weapons{{
+    {"拳头", 6, 0.35F, false, 0},
+    {"木剑", 18, 0.45F, false, 30},
+    {"短弓", 14, 0.55F, true, 45},
+    {"火杖", 22, 0.70F, true, 70}
+}};
+
+const WeaponInfo& weaponInfo(WeaponType weapon) {
+    const int index = static_cast<int>(weapon);
+    return index >= 0 && index < weaponCount
+        ? weapons[static_cast<std::size_t>(index)] : weapons[0];
+}
 }  // namespace
 
 const char* modeName(GameMode mode) {
@@ -86,4 +109,28 @@ TalentId talentChoice(int level, int slot) {
 
 int xpRequired(int level) {
     return 90 + 65 * (level > 0 ? level - 1 : 0);
+}
+
+const char* weaponName(WeaponType weapon) {
+    return weaponInfo(weapon).name;
+}
+
+int weaponBaseDamage(WeaponType weapon) {
+    return weaponInfo(weapon).baseDamage;
+}
+
+float weaponCooldown(WeaponType weapon) {
+    return weaponInfo(weapon).cooldown;
+}
+
+bool weaponRanged(WeaponType weapon) {
+    return weaponInfo(weapon).ranged;
+}
+
+int weaponPrice(WeaponType weapon) {
+    return weaponInfo(weapon).price;
+}
+
+int weaponUpgradeCost(int currentLevel) {
+    return 40 * currentLevel;
 }

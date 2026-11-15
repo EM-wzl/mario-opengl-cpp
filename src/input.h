@@ -18,6 +18,9 @@ enum class Action {
     Skill,
     Save,
     Load,
+    Attack,
+    SwitchWeapon,
+    Interact,
     Count
 };
 

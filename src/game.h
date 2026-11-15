@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <memory>
 #include <string>
@@ -26,7 +27,8 @@ enum class GameState {
     LevelComplete,
     GameOver,
     Won,
-    LevelUp
+    LevelUp,
+    Shop
 };
 
 class Game {
@@ -54,12 +56,24 @@ public:
     void damagePlayer(int amount, bool ignoreInvincible = false);
     void fallOut();
     void spawnParticles(float x, float y, const glm::vec4& color, int count = 8);
-    void spawnBossShot(float x, float y, float vx, float vy, int kind);
+    void spawnBossShot(float x, float y, float vx, float vy, int kind, int damage = 10);
+    void spawnPlayerShot(float x, float y, float vx, float vy, int damage, int kind);
     void onBossDefeated(const Boss& boss);
     void noteBossLock();
     bool bossAlive() const;
     int hp() const { return hp_; }
     int maxHp() const { return maxHp_; }
+    int coins() const { return coins_; }
+
+    void performAttack();
+    void cycleWeapon();
+    WeaponType currentWeapon() const { return currentWeapon_; }
+    float weaponCooldown() const { return weaponCooldown_; }
+    void interact();
+    void openShop();
+    void closeShop();
+    bool buyShopItem(int index);
+    void openChest(int index);
 
     bool saveGame(int slot);
     bool loadGame(int slot);
@@ -79,8 +93,14 @@ private:
         float size = 5.0F;
     };
 
+    enum class InteractKind { None, Shop, Chest };
+    struct InteractTarget {
+        InteractKind kind = InteractKind::None;
+        int index = -1;
+    };
+
     struct SaveData {
-        int version = 0;
+        int version = 2;
         int mode = 0;
         int character = 0;
         int difficulty = 1;
@@ -90,20 +110,23 @@ private:
         int endlessZone = 1;
         int score = 0;
         int coins = 0;
-        int hp = 5;
-        int maxHp = 5;
+        int hp = 100;
+        int maxHp = 100;
         int playerLevel = 1;
         int xp = 0;
         int power = 0;
         int checkpoint = 0;
+        int currentWeapon = 0;
         float timeLeft = 300.0F;
         TalentState talents{};
+        WeaponState weapons{};
     };
 
     void newGame(int startLevel = 0);
     void loadLevel(int index, bool useCheckpoint);
     void updateTitle(float dt);
     void updateLevelUp();
+    void updateShop();
     void adjustTitle(int delta);
     void updatePlaying(float dt);
     void updateParticles(float dt);
@@ -114,14 +137,21 @@ private:
     void respawnAfterDamage();
     const Boss* activeBoss() const;
     void showSaveMessage(const std::string& message);
+    void showShopMessage(const std::string& message);
+    InteractTarget findInteractTarget() const;
+    void performMeleeAttack(WeaponType weapon, int damage);
+    void updateCombatEffects(float dt);
     std::string savePath(int slot) const;
     bool readSave(int slot, SaveData& data) const;
     std::string saveSummary(int slot) const;
     void updateCamera();
     void cleanupEntities();
     void drawBackground(Renderer& renderer);
+    void drawWorldInteractables(Renderer& renderer) const;
     void drawHud(Renderer& renderer);
     void drawOverlay(Renderer& renderer);
+    void drawShop(Renderer& renderer) const;
+    void drawInteractionPrompt(Renderer& renderer) const;
     void loadHighScore();
     void saveHighScore() const;
     std::string highScorePath() const;
@@ -134,8 +164,10 @@ private:
     std::vector<std::unique_ptr<Enemy>> enemies_;
     std::vector<std::unique_ptr<Fireball>> fireballs_;
     std::vector<std::unique_ptr<BossShot>> bossShots_;
+    std::vector<std::unique_ptr<PlayerShot>> playerShots_;
     std::vector<MovingPlatform> platforms_;
     std::vector<Particle> particles_;
+    std::vector<bool> chestOpened_;
 
     GameState state_ = GameState::Title;
     RunOptions options_{};
@@ -155,11 +187,21 @@ private:
     float bossLockTimer_ = 0.0F;
     std::string saveMessage_;
 
+    WeaponState weapons_{};
+    WeaponType currentWeapon_ = WeaponType::Fists;
+    float weaponCooldown_ = 0.0F;
+    float meleeFlashTimer_ = 0.0F;
+    glm::vec2 meleeRectPos_{0.0F};
+    glm::vec2 meleeRectSize_{0.0F};
+    int shopCursor_ = 0;
+    float shopMessageTimer_ = 0.0F;
+    std::string shopMessage_;
+
     int score_ = 0;
     int highScore_ = 0;
     int coins_ = 0;
-    int hp_ = 5;
-    int maxHp_ = 5;
+    int hp_ = 100;
+    int maxHp_ = 100;
     float timeLeft_ = 300.0F;
     float stateTimer_ = 0.0F;
     float fireCooldown_ = 0.0F;

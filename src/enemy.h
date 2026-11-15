@@ -11,6 +11,7 @@ public:
     virtual bool stompable() const { return true; }
     virtual void stomped(Game& game) = 0;
     virtual void hitByFire(Game& game);
+    virtual void hitByWeapon(Game& game, int damage);
     virtual bool dangerous() const { return alive && collidable; }
 
     // 怪物等级：生命、移动速度、得分与经验随等级提升。
@@ -22,6 +23,9 @@ public:
 
 protected:
     void tick(float dt);
+    void configureCombat(int baseDamage, float range, float cooldown, bool ranged);
+    int combatDamage() const;
+    void updateCombat(float dt, Game& game);
     bool applyDamage(Game& game, int amount);
     void awardKill(Game& game, int baseScore);
     void defeat(Game& game);
@@ -40,6 +44,11 @@ private:
     int maxHitPoints_ = 1;
     float speedScale_ = 1.0F;
     float hitFlash_ = 0.0F;
+    int combatDamage_ = 8;
+    float attackRange_ = 64.0F;
+    float attackCooldown_ = 1.4F;
+    float attackTimer_ = 0.0F;
+    bool rangedAttack_ = false;
 };
 
 class Goomba final : public Enemy {
@@ -129,6 +138,7 @@ public:
     void draw(Renderer& renderer) const override;
     void stomped(Game& game) override;
     void hitByFire(Game& game) override;
+    void hitByWeapon(Game& game, int damage) override;
     void killByStar(Game& game) override;
 
     const char* bossName() const;
@@ -152,13 +162,16 @@ private:
 // 与地形碰撞或寿命耗尽后消失；与玩家的碰撞由 Game 统一处理。
 class BossShot final : public Entity {
 public:
-    BossShot(float x, float y, float vx, float vy, int kind);
+    // kind: 0=蛋，1=火焰，2=普通敌人远程弹，3=近战判定
+    BossShot(float x, float y, float vx, float vy, int kind, int damage = 10);
     void update(float dt, Game& game) override;
     void draw(Renderer& renderer) const override;
     int kind() const { return kind_; }
+    int damage() const { return damage_; }
 
 private:
     int kind_ = 0;
+    int damage_ = 10;
     float life_ = 0.0F;
     float animationTime_ = 0.0F;
 };

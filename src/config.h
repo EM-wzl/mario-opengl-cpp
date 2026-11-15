@@ -39,9 +39,10 @@ inline constexpr float enemyWalkSpeed = 72.0F;
 
 inline constexpr float levelTime = 300.0F;
 inline constexpr int levelCount = 8;
-inline constexpr int initialMaxHp = 5;
-inline constexpr int maxHpCap = 9;
-inline constexpr float damageInvincibleTime = 1.8F;
+// 100 血制：生命按点数结算（旧版为 5 格心），伤害、治疗与掉落均为具体数值。
+inline constexpr int initialMaxHp = 100;
+inline constexpr int maxHpCap = 200;
+inline constexpr float damageInvincibleTime = 0.75F;
 
 // 角色被动与主动技能参数。
 inline constexpr float luigiJumpScale = 1.14F;
@@ -86,4 +87,23 @@ inline constexpr float bossFireBurstGap = 0.28F;      // 连发间隔
 inline constexpr float bossShotSpeed = 210.0F;        // 投射物水平速度
 inline constexpr float bossShotGravity = 520.0F;      // 蛋的抛物重力
 inline constexpr float bossShotLife = 4.0F;           // 投射物寿命
+
+// 武器制战斗：玩家近战/远程、敌人攻击、掉落与交互范围。
+inline constexpr float playerShotSpeed = 520.0F;
+inline constexpr float playerShotLife = 2.5F;
+inline constexpr int enemyMeleeDamage = 8;
+inline constexpr int enemyRangedDamage = 7;
+inline constexpr float enemyAttackRangeMelee = 64.0F;
+inline constexpr float enemyAttackRangeRanged = 280.0F;
+inline constexpr float enemyMeleeCooldown = 1.4F;
+inline constexpr float enemyRangedCooldown = 2.1F;
+inline constexpr int fallDamage = 20;
+inline constexpr int potionHeal = 30;
+inline constexpr int chestHeal = 20;
+inline constexpr int chestCoinReward = 25;
+inline constexpr float shopInteractRange = 72.0F;
+inline constexpr float chestInteractRange = 60.0F;
+inline constexpr float weaponMeleeReachFists = 46.0F;
+inline constexpr float weaponMeleeReachSword = 76.0F;
+inline constexpr float weaponMeleeHeight = 42.0F;
 }

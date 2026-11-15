@@ -74,3 +74,36 @@ void Fireball::draw(Renderer& renderer) const {
     renderer.drawSprite(Sprite::Fireball, body.position.x + (body.size.x - size) * 0.5F,
                         body.position.y + (body.size.y - size) * 0.5F, size, size);
 }
+
+PlayerShot::PlayerShot(float x, float y, float vx, float vy, int damage, int kind)
+    : damage_(damage), kind_(kind) {
+    body.size = {kind_ == 0 ? 20.0F : 18.0F, 18.0F};
+    body.position = {x - body.size.x * 0.5F, y - body.size.y * 0.5F};
+    body.velocity = {vx, vy};
+    facing = vx >= 0.0F ? 1 : -1;
+    collidable = false;  // 与敌人的碰撞由 Game 统一处理
+}
+
+void PlayerShot::update(float dt, Game& game) {
+    life_ += dt;
+    animationTime_ += dt;
+    // 直线飞行：不施加重力，命中任意地形或寿命耗尽即消失。
+    const auto collision = physics::moveBody(body, game.level(), dt);
+    if (collision.hitLeft || collision.hitRight || collision.hitGround || collision.hitHead ||
+        life_ > config::playerShotLife ||
+        body.position.y > config::levelHeightTiles * config::tileSize + 80.0F) {
+        alive = false;
+    }
+}
+
+void PlayerShot::draw(Renderer& renderer) const {
+    const float pulse = 1.0F + std::sin(animationTime_ * 26.0F) * 0.10F;
+    const float size = body.size.x * pulse;
+    const glm::vec4 tint = kind_ == 0
+        ? glm::vec4{0.62F, 0.84F, 1.0F, 1.0F}    // 箭：蓝白
+        : glm::vec4{0.72F, 0.40F, 0.96F, 1.0F};  // 魔法弹：紫
+    renderer.drawSprite(Sprite::Fireball,
+                        body.position.x + (body.size.x - size) * 0.5F,
+                        body.position.y + (body.size.y - size) * 0.5F,
+                        size, size, facing < 0, tint);
+}

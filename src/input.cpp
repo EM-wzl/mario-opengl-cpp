@@ -23,6 +23,9 @@ void Input::poll() {
     current_[static_cast<std::size_t>(Action::Skill)] = key(GLFW_KEY_C) || key(GLFW_KEY_Z) || key(GLFW_KEY_V);
     current_[static_cast<std::size_t>(Action::Save)] = key(GLFW_KEY_F5);
     current_[static_cast<std::size_t>(Action::Load)] = key(GLFW_KEY_F9) || key(GLFW_KEY_L);
+    current_[static_cast<std::size_t>(Action::Attack)] = key(GLFW_KEY_J);
+    current_[static_cast<std::size_t>(Action::SwitchWeapon)] = key(GLFW_KEY_Q);
+    current_[static_cast<std::size_t>(Action::Interact)] = key(GLFW_KEY_F) || key(GLFW_KEY_E);
 
     for (std::size_t i = 0; i < actionCount; ++i) {
         // 边沿锁存到物理步消费，避免高渲染帧率下短按被下一次轮询覆盖。

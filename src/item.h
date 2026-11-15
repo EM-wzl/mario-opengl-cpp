@@ -26,3 +26,17 @@ public:
 private:
     float age_ = 0.0F;
 };
+
+class PlayerShot final : public Entity {
+public:
+    PlayerShot(float x, float y, float vx, float vy, int damage, int kind);
+    void update(float dt, Game& game) override;
+    void draw(Renderer& renderer) const override;
+    int damage() const { return damage_; }
+
+private:
+    int damage_ = 1;
+    int kind_ = 0;  // 0=箭，1=魔法弹
+    float life_ = 0.0F;
+    float animationTime_ = 0.0F;
+};
